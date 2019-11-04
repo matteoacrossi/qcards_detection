@@ -1,0 +1,34 @@
+item {
+    id: 1
+    name: 'id'
+}
+
+item {
+    id: 2
+    name: 'X'
+}
+
+item {
+    id: 3
+    name: 'Y'
+}
+
+item {
+    id: 4
+    name: 'Z'
+}
+
+item {
+    id: 5
+    name: 'H'
+}
+
+item {
+    id: 6
+    name: 'SWAP'
+}
+
+item {
+    id: 7
+    name: 'CN'
+}

@@ -3,6 +3,7 @@ import re
 import hashlib
 import io
 import csv
+import os
 
 import PIL.Image
 import numpy as np
@@ -12,10 +13,12 @@ from tqdm import tqdm
 import tensorflow as tf
 import tensorflow.compat.v1.logging as logging
 
+import random
+
 from object_detection.utils import dataset_util, label_map_util
 
 flags = tf.app.flags
-flags.DEFINE_string('output_path', '', 'Path to output TFRecord')
+flags.DEFINE_string('output_dir', '', 'Path to output TFRecord')
 flags.DEFINE_string('images_path', 'images', 'Path to images')
 flags.DEFINE_string('masks_path', 'annotations/masks', 'Path to masks')
 flags.DEFINE_string('label_map_path', 'labels.pbtxt', 'Path to label protobuf')
@@ -29,7 +32,7 @@ def get_class_id(class_name):
 
 def get_mask_paths(filename):
     image_number = re.search('(\d*)\.jpg', filename).group(1)
-    mask_files = FLAGS.masks_path + '/*{}.png'.format(image_number)
+    mask_files = os.path.join(FLAGS.masks_path + '/*{}.png'.format(image_number))
     mask_paths = glob(mask_files)
     mask_paths = {re.search('_([a-zA-Z]*)\d', p).group(1): p for p in mask_paths}
     return mask_paths
@@ -42,7 +45,7 @@ def bounding_box(img):
     xmin, xmax = np.argmax(cols), img.shape[1] - 1 - np.argmax(np.flipud(cols))
     return ymin, ymax, xmin, xmax
 
-def create_tf_example(example):
+def create_tf_example(example, label_map_dict):
     mask_paths = get_mask_paths(example)
 
     with tf.io.gfile.GFile(example, 'rb') as fid:
@@ -89,14 +92,14 @@ def create_tf_example(example):
     encoded_image_data = encoded_jpg # Encoded image bytes
     image_format = 'jpeg' # b'jpeg' or b'png'
 
-    xmins = [bb[2] for bb in bboxes] # List of normalized left x coordinates in bounding box (1 per box)
-    xmaxs = [bb[3] for bb in bboxes] # List of normalized right x coordinates in bounding box
+    xmins = [bb[2] / width for bb in bboxes] # List of normalized left x coordinates in bounding box (1 per box)
+    xmaxs = [bb[3] / width for bb in bboxes] # List of normalized right x coordinates in bounding box
                          # (1 per box)
-    ymins = [bb[0] for bb in bboxes] # List of normalized top y coordinates in bounding box (1 per box)
-    ymaxs = [bb[1] for bb in bboxes] # List of normalized bottom y coordinates in bounding box
+    ymins = [bb[0] / width for bb in bboxes] # List of normalized top y coordinates in bounding box (1 per box)
+    ymaxs = [bb[1] / width for bb in bboxes] # List of normalized bottom y coordinates in bounding box
                          # (1 per box)
     classes_text = map(lambda x: x.encode('utf8'), classes) # List of string class name of bounding box (1 per box)
-    classes = list(map(get_class_id, classes)) # List of integer class id of bounding box (1 per box)
+    classes = list(map(lambda x: label_map_dict[x], classes)) # List of integer class id of bounding box (1 per box)
 
     encoded_mask_png_list = []
     for mask in masks:
@@ -124,21 +127,37 @@ def create_tf_example(example):
     return tf_example
 
 def main(_):
-    global CLASS_IDS
-    global CLASS_NAMES
-    writer = tf.io.TFRecordWriter(FLAGS.output_path)
+    label_map_dict = label_map_util.get_label_map_dict(FLAGS.label_map_path)
     
-    examples = glob('images/*.jpg')
+    examples_list = glob(os.path.join('images','*.jpg'))
+    
+    logging.info('Found {} images'.format(len(examples_list)))    
 
-    logging.info('Found {} images'.format(len(examples)))    
+    # We automatically split into training and validation set
+    random.seed(42)
+    random.shuffle(examples_list)
+    num_examples = len(examples_list)
+    num_train = int(0.7 * num_examples)
+    train_examples = examples_list[:num_train]
+    val_examples = examples_list[num_train:]
 
-    with open (FLAGS.classes_file, 'r') as f:
-        rows = [(int(row[0]), row[1]) for row in csv.reader(f, delimiter=',')]
-        #CLASS_NAMES = [row[1] for row in csv.reader(f)]
-    CLASS_IDS, CLASS_NAMES = map(list, zip(*rows))
+    logging.info('%d training and %d validation examples.',
+                len(train_examples), len(val_examples))
 
-    for example in tqdm(examples):
-        tf_example = create_tf_example(example)
+    train_output_path = os.path.join(FLAGS.output_dir, 'qcards_train.record')
+    val_output_path = os.path.join(FLAGS.output_dir, 'qcards_val.record')
+
+
+    writer = tf.io.TFRecordWriter(train_output_path)
+    for example in tqdm(train_examples):
+        tf_example = create_tf_example(example, label_map_dict=label_map_dict)
+        writer.write(tf_example.SerializeToString())
+
+    writer.close()
+
+    writer = tf.io.TFRecordWriter(val_output_path)
+    for example in tqdm(val_examples):
+        tf_example = create_tf_example(example, label_map_dict=label_map_dict)
         writer.write(tf_example.SerializeToString())
 
     writer.close()
